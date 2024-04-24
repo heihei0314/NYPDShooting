@@ -1,0 +1,219 @@
+---
+title: "COVID19"
+author: "Eric Yeung"
+date: "2024-04-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+```
+
+## Import Data
+
+There are 4 data tables for the COVID19 analytics. The global case contains 3342 rows and 1154 variables. The global deaths contains 289 rows and 1147 variables. The US case contains 3342 rows and 1155 variables. The US deaths contains 289 rows and 1147 variables. 
+
+```{r url, echo=FALSE}
+#access csv from urls
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names<-c("time_series_covid19_confirmed_global.csv","time_series_covid19_deaths_global.csv","time_series_covid19_confirmed_US.csv","time_series_covid19_deaths_US.csv" )
+urls<-str_c(url_in,file_names)
+```
+
+```{r import, echo=FALSE}
+global_cases<-read_csv(urls[1])
+global_deaths<-read_csv(urls[2])
+US_cases<-read_csv(urls[3])  
+US_deaths<-read_csv(urls[4])
+```
+
+## Clean Data
+
+Now, extract the interested data from global death and global cases. And also join the two table together. 
+Then, Change the date into datetime format
+Next, filter out the number of cases more than 0
+Last, repeat for the US cases and death, and transform the conbined key(fill in NA) for the global
+Also add population for further analysis
+
+```{r import global, echo=FALSE}
+
+global_cases<-global_cases%>%
+  pivot_longer(cols=-c('Province/State',
+                       'Country/Region',Lat,Long),
+               names_to = "date",
+               values_to = "cases")%>%
+  select(-c(Lat,Long))
+global_cases <-global_cases %>%filter(cases>0)
+
+global_deaths<-global_deaths%>%
+  pivot_longer(cols=-c('Province/State',
+                       'Country/Region',Lat,Long),
+               names_to = "date",
+               values_to = "deaths")%>%
+  select(-c(Lat,Long))
+
+global<-global_cases%>%
+  full_join(global_deaths)%>%
+  rename(Country_Region='Country/Region',
+         Province_State='Province/State')%>%
+  mutate(date=mdy(date))     
+
+global<-global%>%filter(cases>0)
+
+global<-global%>%
+  unite("Combined_Key",c(Province_State,Country_Region),
+        sep =", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+uid_lookup_url<-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid<-read_csv(uid_lookup_url)%>%
+  select(-c(Lat,Long_,Combined_Key,code3,iso2,iso3,Admin2))
+global<-global%>%
+  left_join(uid, by = c("Province_State","Country_Region"))%>%
+  select(-c(UID,FIPS))%>%
+  select(Province_State,Country_Region,date,cases,deaths,Population,Combined_Key)
+
+summary(global)
+```
+
+```{r import US, echo=FALSE}
+US_cases<-US_cases%>%
+  pivot_longer(cols=-(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases")%>%
+  select(Admin2:cases)%>%
+mutate(date=mdy(date))%>%
+select(-c(Lat,Long_))
+
+US_deaths<-US_deaths%>%
+  pivot_longer(cols=-(UID:Combined_Key),
+               names_to = "date",
+               values_to = "deaths")%>%
+  select(Admin2:deaths)%>%
+  mutate(date=mdy(date))%>%
+  select(-c(Lat,Long_))
+  
+US<-US_cases%>%
+  full_join(US_deaths)
+
+US<-US%>%filter(cases>0)
+
+uid_US<-read_csv(uid_lookup_url)%>%
+  select(-c(Lat,Long_,Combined_Key,code3,iso2,iso3))
+
+US<-US%>%
+  left_join(uid_US, by = c("Admin2","Province_State","Country_Region"))%>%
+  select(-c(UID,FIPS))%>%
+  select(Admin2,"Province_State",Country_Region,date,cases,deaths,Population,Combined_Key)
+summary(US)
+```
+
+#Visualising Data
+Generate two plot for the cases and deaths in US and New York. We could see similar pattern in US and New York. The Cases and Deaths rose rapidly in early 2020. Then turned to stable a few month afterward. 
+```{r visualise, echo=FALSE}
+US_by_state<-US%>%
+  group_by(Province_State,Country_Region,date)%>%
+  summarize(cases=sum(cases),
+            deaths=sum(deaths),
+            Population=sum(Population))%>%
+  mutate(deaths_per_mill=deaths*1000000/Population)%>%
+  select(Province_State,Country_Region,date,cases,deaths,deaths_per_mill,Population)%>%
+  ungroup()
+US_by_total<-US%>%
+  group_by(Province_State,Country_Region,date)%>%
+  summarize(cases=sum(cases),
+            deaths=sum(deaths),
+            Population=sum(Population))%>%
+  mutate(deaths_per_mill=deaths*1000000/Population)%>%
+  select(Province_State,Country_Region,date,cases,deaths,deaths_per_mill,Population)%>%
+  ungroup()
+
+US_by_total%>%
+  filter(cases>0)%>%
+  ggplot(aes(x=date,y=cases))+
+  geom_line(aes(color="cases"))+
+  geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+
+  geom_point(aes(y=deaths, color="deaths"))+
+  scale_y_log10()+
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90))+
+  labs(title="COVID19 in US",y=NULL)
+
+US_by_state%>%
+  filter(Province_State=="New York")%>%
+  ggplot(aes(x=date,y=cases))+
+  geom_line(aes(color="cases"))+
+  geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+
+  geom_point(aes(y=deaths, color="deaths"))+
+  scale_y_log10()+
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90))+
+  labs(title="COVID19 in New York",y=NULL)
+```
+
+#Analysing Data
+Now, we analysis the changes (lag) of the cases and deaths. We could find the changes(drops) of deaths are much larger than the changes of cases. It indicate that the COVID19 keep influence, but the death rate was controlled.
+```{r analysis, echo=FALSE}
+US_by_total<-US_by_total%>%
+  mutate(new_cases=cases-lag(cases),
+         new_death=deaths-lag(deaths))
+US_by_state<-US_by_state%>%
+  mutate(new_cases=cases-lag(cases),
+         new_death=deaths-lag(deaths))
+
+US_by_total%>%
+  ggplot(aes(x=date,y=new_cases))+
+  geom_line(aes(color="new_cases"))+
+  geom_point(aes(color="new_cases"))+
+  geom_line(aes(y=new_death,color="new_death"))+
+  geom_point(aes(y=new_death, color="new_death"))+
+  scale_y_log10()+
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90))+
+  labs(title="COVID19 in US",y=NULL)
+
+US_by_state%>%
+  filter(Province_State=="New York")%>%
+  ggplot(aes(x=date,y=new_cases))+
+  geom_line(aes(color="new_cases"))+
+  geom_point(aes(color="new_cases"))+
+  geom_line(aes(y=new_death,color="new_death"))+
+  geom_point(aes(y=new_death, color="new_death"))+
+  scale_y_log10()+
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90))+
+  labs(title="COVID19 in New York",y=NULL)
+```
+
+#Modelling Data
+lets model the death rate by cases with linear model.As a result, the deaths has a mean porpotion of 1% of cases. The linear relationship is significant as well
+```{r model, echo=FALSE}
+US_by_total<-US_by_total%>%
+  group_by(Province_State)%>%
+  summarize(deaths=max(deaths),cases=max(cases),
+            Population=max(Population),
+            cases_per_thou=1000*cases/Population,
+            deaths_per_thou=1000*deaths/Population)
+
+US_by_state<-US_by_state%>%
+  group_by(Province_State)%>%
+  summarize(deaths=max(deaths),cases=max(cases),
+            Population=max(Population),
+            cases_per_thou=1000*cases/Population,
+            deaths_per_thou=1000*deaths/Population)
+
+model_total = lm(deaths_per_thou~cases_per_thou,data=US_by_total)
+summary(model_total)
+
+model_state = lm(deaths_per_thou~cases_per_thou,data=US_by_state)
+summary(model_total)
+```
