@@ -1,0 +1,152 @@
+---
+title: "ProjectRmd"
+author: "Eric Yeung"
+date: "2024-04-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library("magrittr") 
+library(lubridate)
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(caTools)
+library(ROCR)
+```
+
+## Importing Data
+
+We are going to download the NYPD Shooting Incident data from an URL. After that store the csv file into a data frame. Having a brief look on it. There are 21 variables and 28562 rows in the data set. 
+
+```{r import, echo=FALSE}
+url <- 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv'
+## read the data from the URL
+df <- read_csv(url)
+summary(df)
+summary(df)
+```
+
+## Data Cleaning
+
+Having overview of the data set, we found some variables contain null value and some redundant variables Those redundant variables are unrelated to our interest or repeated information. 
+
+First we remove those columns and store in a new data frame. We also find that the OCCUR_DATE is not in date format. Change it into data format
+
+Looking at the data, there are a lot of missing data.Most are related to location.To deal with it, we will try to restore the LOC_CLASSFCTN_DESC if there is the same LOCATION_DESC. Otherwise,we will omit the records with missing data. As well as, transform the "(null)" into NULL value. For the PERP related data, the missing data will be recode into UNKNOWN or U
+
+As a result, only 1238 records and 17 variables left.
+
+```{r clean, echo=FALSE}
+colSums(is.na(df))
+clean_df<-subset(df, select = -c(X_COORD_CD, Y_COORD_CD, Latitude ,Longitude) )
+clean_df$OCCUR_DATE <- strptime(as.character(clean_df$OCCUR_DATE), "%d/%m/%Y")
+
+clean_df$PERP_RACE <- replace(clean_df$PERP_RACE, clean_df$PERP_RACE == '(null)', "UNKNOWN")
+clean_df$PERP_SEX <- replace(clean_df$PERP_SEX, clean_df$PERP_SEX == '(null)', "U")
+clean_df$PERP_AGE_GROUP <- replace(clean_df$PERP_AGE_GROUP, clean_df$PERP_AGE_GROUP == '(null)', "UNKNOWN")
+
+clean_df <- clean_df %>% dplyr::mutate(
+  LOC_CLASSFCTN_DESC = dplyr::na_if(LOC_CLASSFCTN_DESC, '(null)'),
+  LOCATION_DESC = dplyr::na_if(LOCATION_DESC, '(null)'),
+)
+clean_df<-na.omit(clean_df)
+summary(clean_df)
+```
+
+## Visualising Data
+In this project, We would like to focus on the victims demographics and kill rate. 
+
+First group by the victims demographics and then plot bar chart for age group, gender and race. We found that most shooting victims were 25-44 adult, Male or Black.
+
+Briefly, we could not see main different of distribution between race, age or gender.
+
+```{r Visualise, echo=FALSE}
+df_by_victim_age <- clean_df %>%
+  group_by(VIC_AGE_GROUP)%>%
+  summarize(killed=sum(STATISTICAL_MURDER_FLAG==TRUE),
+            survie = sum(STATISTICAL_MURDER_FLAG==FALSE))
+df_by_victim_age$cases = df_by_victim_age$killed+df_by_victim_age$survie
+
+df_by_victim_sex <- clean_df %>%
+  group_by(VIC_SEX)%>%
+  summarize(killed=sum(STATISTICAL_MURDER_FLAG==TRUE),
+            survie = sum(STATISTICAL_MURDER_FLAG==FALSE))
+df_by_victim_sex$cases = df_by_victim_sex$killed+df_by_victim_sex$survie
+
+df_by_victim_race <- clean_df %>%
+  group_by(VIC_RACE)%>%
+  summarize(killed=sum(STATISTICAL_MURDER_FLAG==TRUE),
+            survie = sum(STATISTICAL_MURDER_FLAG==FALSE))
+df_by_victim_race$cases = df_by_victim_race$killed+df_by_victim_race$survie
+
+ggplot(df_by_victim_age, aes(x=VIC_AGE_GROUP, y=killed))+geom_bar(stat="identity") 
+ggplot(df_by_victim_age, aes(x=VIC_AGE_GROUP, y=survie))+geom_bar(stat="identity") 
+ggplot(df_by_victim_sex, aes(x=VIC_SEX, y=killed))+geom_bar(stat="identity") 
+ggplot(df_by_victim_sex, aes(x=VIC_SEX, y=survie))+geom_bar(stat="identity") 
+ggplot(df_by_victim_race, aes(x=VIC_RACE, y=killed))+geom_bar(stat="identity") 
+ggplot(df_by_victim_race, aes(x=VIC_RACE, y=survie))+geom_bar(stat="identity") 
+
+```
+
+## Analysing Data
+
+After constructing a cross table with killed and victims demographic, we test the association with chi-square test. The result show only the age group has weak significant association (p=0.05). the gender and race do not show significant association
+```{r Analyse, echo=FALSE}
+table(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_RACE)
+chisq.test(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_RACE)
+
+table(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_SEX)
+chisq.test(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_SEX)
+
+table(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_AGE_GROUP)
+chisq.test(clean_df$STATISTICAL_MURDER_FLAG, clean_df$VIC_AGE_GROUP)
+```
+
+## Modelling Data
+Even though the victim characteristics does not significantly affect the survival rate, we tried to model to fit the data. Using 80% data for training, and rest for testing. 
+
+The model show that higher age significantly associate to the survival rate. AIC is high and the AUC is close to 0.5. That indicate that the model could not predict the survival rate. Its prediction is similar to randomly guess.
+```{r Model, echo=FALSE}
+# Splitting dataset
+split <- sample(c(TRUE, FALSE), nrow(clean_df), replace=TRUE, prob=c(0.8,0.2))
+ 
+train_reg <- subset(clean_df, split == "TRUE")
+test_reg <- subset(clean_df, split == "FALSE")
+ 
+# Training model
+logistic_model <- glm(STATISTICAL_MURDER_FLAG  ~ VIC_AGE_GROUP,
+                    data = train_reg,
+                    family = "binomial")
+ 
+# Summary
+summary(logistic_model)
+
+# Prediction
+predict_reg<-predict(logistic_model, test_reg,  
+                    type = 'response') 
+
+ROCPred <- prediction(predict_reg, test_reg$STATISTICAL_MURDER_FLAG)
+ROCPer <- performance(ROCPred, measure = "tpr",
+                      x.measure = "fpr")
+
+auc <- performance(ROCPred, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+
+# Plotting curve
+plot(ROCPer)
+plot(ROCPer, colorize = TRUE,
+     print.cutoffs.at = seq(0.1, by = 0.1),
+     main = "ROC CURVE")
+abline(a = 0, b = 1)
+
+auc <- round(auc, 4)
+legend(.6, .4, auc, title = "AUC", cex = 1)
+```
+
+## Bias Identification
+To conclude, the victim demographic may not be associate to the survival rate in shooting incident. However, it might because of bias. First the data contain too many missing data. After cleaning data, there are not much valid data for analysis. Second, the data heavily contain specific group of victims. It also affect the power of the model and analysis. The serious bias is the race of perpetrator contain plenty of unknown. It might be because of racism, when the official would like to hide significant data of the perpetrator.
